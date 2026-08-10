@@ -21,14 +21,41 @@
 #            docker images day12-agent:prod     # xem dung lượng
 # ═══════════════════════════════════════════════════════════════════
 
-FROM python:3.11
+# ── Stage 1: Builder ─────────────────────────────────────────────
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# Copy requirements first (for Docker cache)
+COPY requirements.txt .
+
+# Install dependencies into /install prefix
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ── Stage 2: Runtime ──────────────────────────────────────────────
+FROM python:3.11-slim AS runtime
 
 WORKDIR /app
 
-COPY . .
+# Copy installed packages from builder stage
+COPY --from=builder /install /usr/local
 
-RUN pip install -r requirements.txt
+# Create non-root user
+RUN useradd --create-home --uid 10001 appuser
 
+# Copy application code
+COPY app ./app
+COPY utils ./utils
+
+# Switch to non-root user
+USER appuser
+
+# Expose port (Railway/Render/Cloud Run sets PORT env var)
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Healthcheck: call /health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${PORT:-8000}/health').read()" || exit 1
+
+# Run uvicorn, listen on 0.0.0.0, read port from PORT env var
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
